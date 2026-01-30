@@ -65,7 +65,9 @@ public class ShutdownService {
                 ConfigHandler.purgeRunning = false;
             }
 
-            waitForPendingOperations(shutdownTime, nextAlertTime);
+            // 保留中の操作の待機をスキップ - 即時シャットダウンを強制する
+            // waitForPendingOperations(shutdownTime, nextAlertTime);
+            Chat.console("Skipping log save wait - forcing immediate shutdown.");
 
             ConfigHandler.performDisable();
             Chat.console(Phrase.build(Phrase.DISABLE_SUCCESS, "CoreProtect v" + plugin.getDescription().getVersion()));
