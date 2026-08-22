@@ -30,6 +30,8 @@ public class ShutdownService {
 
     private static final long ALERT_INTERVAL_MS = 30 * 1000; // 30 seconds
     private static final long MAX_SHUTDOWN_WAIT_MS = 15 * 60 * 1000; // 15 minutes
+    private static final long IMMEDIATE_SHUTDOWN_WAIT_MS = 10 * 1000; // 10 seconds
+    private static final long CONSUMER_TERMINATION_WAIT_MS = 15 * 1000; // 15 seconds
     private static final long DB_UNREACHABLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
     private ShutdownService() {
@@ -81,7 +83,16 @@ public class ShutdownService {
                     Chat.console(Phrase.build(Phrase.FINISHING_LOGGING));
                 }
 
-                waitForPendingOperations(shutdownTime, nextAlertTime);
+                // 即時シャットダウンを強制する: 保留中の操作は短時間だけ待機する
+                waitForPendingOperations(shutdownTime, nextAlertTime, IMMEDIATE_SHUTDOWN_WAIT_MS);
+
+                // 待機を打ち切った場合でも、コンシューマスレッドは必ず停止させる。
+                // プラグインの ClassLoader が閉じられた後にスレッドが動作し続けると、
+                // クラスのロードに失敗して "zip file closed" が繰り返し発生するため。
+                Consumer.abortForShutdown();
+                if (!Consumer.awaitTermination(CONSUMER_TERMINATION_WAIT_MS)) {
+                    Chat.console(Phrase.build(Phrase.LOGGING_TIME_LIMIT));
+                }
             }
             finally {
                 ConfigHandler.shutdownDrainRunning = false;
@@ -102,8 +113,10 @@ public class ShutdownService {
      *            The time when shutdown began
      * @param nextAlertTime
      *            The time for the next status message
+     * @param maxWaitTime
+     *            The maximum time to wait for pending operations, in milliseconds
      */
-    private static void waitForPendingOperations(long shutdownTime, long nextAlertTime) throws InterruptedException {
+    private static void waitForPendingOperations(long shutdownTime, long nextAlertTime, long maxWaitTime) throws InterruptedException {
         while (Consumer.isRunning() || ConfigHandler.converterRunning || ConfigHandler.purgeRunning || ConfigHandler.migrationRunning
                 || Consumer.isDatabaseReloadRunning() || Consumer.isBackgroundPurgeRunning() || PurgeCommand.isPurgeWorkerRunning()) {
             long currentTime = System.currentTimeMillis();
@@ -120,7 +133,7 @@ public class ShutdownService {
                 Chat.console(Phrase.build(Phrase.DATABASE_UNREACHABLE));
                 break;
             }
-            else if ((currentTime - shutdownTime) >= MAX_SHUTDOWN_WAIT_MS) {
+            else if ((currentTime - shutdownTime) >= maxWaitTime) {
                 Chat.console(Phrase.build(Phrase.LOGGING_TIME_LIMIT));
                 break;
             }

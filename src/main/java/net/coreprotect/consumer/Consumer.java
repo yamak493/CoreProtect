@@ -48,6 +48,7 @@ public class Consumer extends Process implements Runnable, Thread.UncaughtExcept
     public static volatile boolean interrupt = false;
     protected static volatile boolean pausedSuccess = false;
     private static volatile boolean persistenceHalted = false;
+    private static volatile boolean shutdownAbortRequested = false;
 
     public static ConcurrentHashMap<Integer, ArrayList<Object[]>> consumer = new ConcurrentHashMap<>(4, 0.75f, 2);
     // public static ConcurrentHashMap<Integer, Integer[]> consumer_id = new ConcurrentHashMap<>();
@@ -116,6 +117,7 @@ public class Consumer extends Process implements Runnable, Thread.UncaughtExcept
     public static void initialize() {
         synchronized (rollbackPurgeGate) {
             persistenceHalted = false;
+            shutdownAbortRequested = false;
             pendingRollbackPublications = 0;
             databaseReloadBlockedForShutdown = false;
             databaseReloadShutdownSignal.complete(null);
@@ -155,6 +157,42 @@ public class Consumer extends Process implements Runnable, Thread.UncaughtExcept
 
     public static boolean isPersistenceHalted() {
         return persistenceHalted;
+    }
+
+    /**
+     * Requests that the consumer thread stop as soon as possible, without draining any
+     * remaining queued data. Used to guarantee that the thread has terminated before the
+     * plugin class loader is closed during shutdown.
+     */
+    public static void abortForShutdown() {
+        shutdownAbortRequested = true;
+    }
+
+    public static boolean isShutdownAbortRequested() {
+        return shutdownAbortRequested;
+    }
+
+    /**
+     * Waits for the consumer thread to terminate.
+     *
+     * @param timeoutMillis
+     *            The maximum time to wait, in milliseconds
+     * @return true if the consumer thread is no longer running
+     */
+    public static boolean awaitTermination(long timeoutMillis) {
+        Thread thread = consumerThread;
+        if (thread == null || !thread.isAlive()) {
+            return true;
+        }
+
+        try {
+            thread.join(Math.max(1L, timeoutMillis));
+        }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        return !thread.isAlive();
     }
 
     public static void lockDatabaseAccess() {
@@ -429,7 +467,7 @@ public class Consumer extends Process implements Runnable, Thread.UncaughtExcept
 
     private static void pauseConsumer(int process_id) {
         try {
-            while (Consumer.consumer_id.get(process_id)[1] > 0 || ((ConfigHandler.serverRunning || ConfigHandler.converterRunning || ConfigHandler.migrationRunning) && (Consumer.isPaused || ConfigHandler.pauseConsumer || ConfigHandler.purgeRunning))) {
+            while (!shutdownAbortRequested && (Consumer.consumer_id.get(process_id)[1] > 0 || ((ConfigHandler.serverRunning || ConfigHandler.converterRunning || ConfigHandler.migrationRunning) && (Consumer.isPaused || ConfigHandler.pauseConsumer || ConfigHandler.purgeRunning)))) {
                 pausedSuccess = true;
                 Thread.sleep(100);
             }
@@ -446,6 +484,9 @@ public class Consumer extends Process implements Runnable, Thread.UncaughtExcept
         boolean[] drained = { true, true };
 
         while (ConfigHandler.serverRunning || ConfigHandler.converterRunning || !lastRun) {
+            if (shutdownAbortRequested) { // 即時シャットダウン: 残りのキューは破棄する
+                break;
+            }
             if (!ConfigHandler.serverRunning && !ConfigHandler.converterRunning) {
                 lastRun = true;
             }

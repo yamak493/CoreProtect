@@ -241,6 +241,13 @@ public class Process {
             }
             processingStarted = true;
             for (int i = 0; i < consumerDataSize; i++) {
+                if (Consumer.isShutdownAbortRequested()) { // 即時シャットダウン: 未処理分は破棄する
+                    boolean flushed = commit(writeBatch);
+                    completeTransactionState(entitySpawnUpdates, pendingEntityContainerTransactions, pendingEntityContainerRollbacks, pendingEntityInteractions, pendingEntityIdentityConfirmations, invalidatedEntityIdentityConfirmations, promotedEntityIdentities, entitySpawnIdentities, pendingEntitySpawnLogs, transactionOutcome(flushed));
+                    failConsumerBatch(processId, consumerData, users, consumerObject, flushed ? i : processedThrough, i);
+                    return;
+                }
+
                 attemptedThrough = i + 1;
                 Object[] data = consumerData.get(i);
                 if (data != null) {
